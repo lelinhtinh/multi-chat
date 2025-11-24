@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none';"
+    />
+    <title>Multi Chat</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <nav id="service-list" aria-label="Dịch vụ"></nav>
+      </aside>
+      <header class="topbar">
+        <div class="tabs-nav">
+          <button id="tab-left" class="ghost arrow" aria-label="Tab trước">‹</button>
+          <div class="tabs" id="tabs" aria-label="Phiên đã mở"></div>
+          <button id="tab-right" class="ghost arrow" aria-label="Tab sau">›</button>
+        </div>
+      </header>
+      <main class="placeholder" id="placeholder">
+        <p>Chọn dịch vụ để mở. Nội dung được hiển thị qua WebContentsView (không bị chặn iframe).</p>
+      </main>
+    </div>
+    <script src="renderer.js"></script>
+  </body>
+</html>

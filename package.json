@@ -1,0 +1,13 @@
+{
+  "name": "multi-chat",
+  "version": "0.1.0",
+  "description": "Multi-service chat wrapper using Electron WebContentsView",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^39.2.3"
+  },
+  "dependencies": {}
+}
