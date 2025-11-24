@@ -14,7 +14,7 @@ const TOPBAR_HEIGHT = 64;
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36";
 
-/** @type {Map<string, {serviceId: string, title: string, color: string, hasNotification: boolean, view: WebContentsView | null}>} */
+/** @type {Map<string, {serviceId: string, title: string, color: string, hasNotification: boolean, lastBadgeAt?: number, view: WebContentsView | null}>} */
 const tabs = new Map();
 let activeTabId = null;
 let mainWindow = null;
@@ -22,6 +22,7 @@ let stateFilePath = null;
 let currentAttachedView = null;
 let detachedView = null;
 const partitionHandlers = new Set();
+const partitionPolicyPatched = new Set();
 
 // Disable Chrome autofill features to avoid DevTools warnings.
 app.commandLine.appendSwitch("disable-features", "Autofill,AutofillServerCommunication");
@@ -29,6 +30,26 @@ app.commandLine.appendSwitch("disable-blink-features", "Autofill");
 
 // Set App User Model ID (required for notifications on Windows).
 app.setAppUserModelId("com.multichat.app");
+
+function stripUnloadPermissionPolicy(sess) {
+  if (partitionPolicyPatched.has(sess)) return;
+  sess.webRequest.onHeadersReceived((details, callback) => {
+    const headers = { ...details.responseHeaders };
+    const key = Object.keys(headers).find((k) => k.toLowerCase() === "permissions-policy");
+    if (key && Array.isArray(headers[key])) {
+      const sanitized = headers[key]
+        .map((val) => val.replace(/\s*unload=[^;,]+[;,]?\s*/gi, "").trim())
+        .filter(Boolean);
+      if (sanitized.length > 0) {
+        headers[key] = sanitized;
+      } else {
+        delete headers[key];
+      }
+    }
+    callback({ responseHeaders: headers });
+  });
+  partitionPolicyPatched.add(sess);
+}
 
 function toggleActiveDevtools() {
   if (!activeTabId) return;
@@ -164,6 +185,24 @@ function detectNotificationFromTitle(title) {
   return /[\[\(\{]?\d+[\]\)\}]?/.test(title) || title.includes("•");
 }
 
+function showBadgeNotification(tabId, pageTitle) {
+  const meta = tabs.get(tabId);
+  if (!meta) return;
+  const svc = findService(meta.serviceId);
+  const title = svc ? `${svc.name} có thông báo` : "Có thông báo mới";
+  const body = pageTitle && pageTitle.trim() ? pageTitle : meta.title || svc?.name || "";
+  try {
+    const n = new Notification({
+      title,
+      body,
+      silent: true
+    });
+    n.show();
+  } catch (err) {
+    console.warn("Failed showing badge notification", err);
+  }
+}
+
 function attachNotificationListener(view, tabId) {
   view.webContents.on("page-title-updated", (_event, title) => {
     const has = detectNotificationFromTitle(title);
@@ -173,6 +212,10 @@ function attachNotificationListener(view, tabId) {
     meta.hasNotification = has;
     if (changed) {
       console.log("[notify] tab", tabId, "title:", title, "hasNotification:", has);
+      if (has) {
+        meta.lastBadgeAt = Date.now();
+        showBadgeNotification(tabId, title);
+      }
       broadcastTabs();
     }
   });
@@ -210,15 +253,17 @@ function attachNotificationListener(view, tabId) {
 function ensureNotificationPermission(partitionId) {
   if (partitionHandlers.has(partitionId)) return;
   const sess = session.fromPartition(`persist:${partitionId}`);
+  stripUnloadPermissionPolicy(sess);
   console.log("[notify] setup permission handlers for partition", partitionId);
+  const allowed = new Set(["notifications", "media", "audioCapture", "videoCapture"]);
   sess.setPermissionRequestHandler((_, permission, callback) => {
-    if (permission === "notifications") {
+    if (allowed.has(permission)) {
       return callback(true);
     }
     callback(false);
   });
   sess.setPermissionCheckHandler((_, permission) => {
-    if (permission === "notifications") return true;
+    if (allowed.has(permission)) return true;
     return false;
   });
   partitionHandlers.add(partitionId);
@@ -446,6 +491,7 @@ ipcMain.handle("notify", async (_event, payload) => {
 });
 
 app.whenReady().then(() => {
+  stripUnloadPermissionPolicy(session.defaultSession);
   createWindow();
   restoreState();
   app.on("activate", () => {
