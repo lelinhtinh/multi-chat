@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Local API Test</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background: #0b1021;
+        color: #e7edf7;
+        margin: 0;
+        padding: 24px;
+      }
+      h1 {
+        margin-top: 0;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+      }
+      .card {
+        background: #11162b;
+        border: 1px solid #1b2540;
+        border-radius: 10px;
+        padding: 14px;
+      }
+      button {
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #1b2540;
+        background: #19233d;
+        color: #e7edf7;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: #5ef2d6;
+        color: #5ef2d6;
+      }
+      pre {
+        background: #0d1225;
+        padding: 10px;
+        border-radius: 8px;
+        max-height: 200px;
+        overflow: auto;
+        color: #c0caf5;
+      }
+      video {
+        width: 100%;
+        max-height: 220px;
+        background: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Local API Test</h1>
+    <div class="grid">
+      <div class="card">
+        <h3>Notification</h3>
+        <button id="notify">Request + Show</button>
+      </div>
+      <div class="card">
+        <h3>Microphone</h3>
+        <button id="mic">Open Mic</button>
+        <audio id="mic-audio" controls></audio>
+      </div>
+      <div class="card">
+        <h3>Camera</h3>
+        <button id="cam">Open Camera</button>
+        <video id="cam-video" autoplay muted playsinline></video>
+      </div>
+      <div class="card">
+        <h3>Screen Capture</h3>
+        <button id="screen">Share Screen</button>
+        <video id="screen-video" autoplay muted playsinline></video>
+      </div>
+    </div>
+    <div class="card" style="margin-top: 16px">
+      <h3>Log</h3>
+      <pre id="log"></pre>
+    </div>
+
+    <script>
+      const log = (msg) => {
+        const pre = document.getElementById("log");
+        pre.textContent += msg + "\n";
+        pre.scrollTop = pre.scrollHeight;
+      };
+
+      document.getElementById("notify").onclick = async () => {
+        try {
+          const perm = await Notification.requestPermission();
+          log("Notification permission: " + perm);
+          if (perm === "granted") {
+            new Notification("Local Test", { body: "Hello from local test page" });
+            log("Notification shown");
+          }
+        } catch (err) {
+          log("Notification error: " + err);
+        }
+      };
+
+      document.getElementById("mic").onclick = async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          document.getElementById("mic-audio").srcObject = stream;
+          document.getElementById("mic-audio").play();
+          log("Mic stream started");
+        } catch (err) {
+          log("Mic error: " + err);
+        }
+      };
+
+      document.getElementById("cam").onclick = async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          const video = document.getElementById("cam-video");
+          video.srcObject = stream;
+          video.play();
+          log("Camera stream started");
+        } catch (err) {
+          log("Camera error: " + err);
+        }
+      };
+
+      document.getElementById("screen").onclick = async () => {
+        try {
+          const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+          const video = document.getElementById("screen-video");
+          video.srcObject = stream;
+          video.play();
+          log("Screen capture started");
+        } catch (err) {
+          log("Screen error: " + err);
+        }
+      };
+    </script>
+  </body>
+ </html>

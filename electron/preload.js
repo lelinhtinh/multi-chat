@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 const path = require("path");
 const fs = require("fs");
 
-const ICON_NAMES = ["telegram", "messenger", "discord", "gmail"];
+const ICON_NAMES = ["telegram", "messenger", "discord", "gmail", "test"];
 
 function loadSvg(name) {
   try {

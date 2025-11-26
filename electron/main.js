@@ -1,12 +1,14 @@
 const { app, BrowserWindow, WebContentsView, ipcMain, session, Notification } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { pathToFileURL } = require("url");
 
 const SERVICES = [
   { id: "telegram", name: "Telegram", url: "https://web.telegram.org/a", iconKey: "telegram" },
   { id: "messenger", name: "Messenger", url: "https://www.messenger.com/", iconKey: "messenger" },
   { id: "discord", name: "Discord", url: "https://discord.com/app", iconKey: "discord" },
-  { id: "gmail", name: "Gmail", url: "https://mail.google.com/mail/u/0", iconKey: "gmail" }
+  { id: "gmail", name: "Gmail", url: "https://mail.google.com/mail/u/0", iconKey: "gmail" },
+  { id: "local-test", name: "Local API Test", url: "local-test", iconKey: "test" }
 ];
 
 const SIDEBAR_WIDTH = 72;
@@ -22,6 +24,8 @@ let stateFilePath = null;
 let currentAttachedView = null;
 let detachedView = null;
 const partitionHandlers = new Set();
+const mediaHandlers = new Set();
+let defaultMediaPatched = false;
 const partitionPolicyPatched = new Set();
 
 // Disable Chrome autofill features to avoid DevTools warnings.
@@ -173,9 +177,15 @@ function buildView(serviceId, partitionId) {
     }
   });
   view.webContents.setUserAgent(USER_AGENT);
-  view.webContents.loadURL(svc.url).catch((err) => {
-    console.error("Failed to load service", serviceId, err);
-  });
+  const targetUrl =
+    svc.url === "local-test"
+      ? pathToFileURL(path.join(__dirname, "..", "renderer", "local-test", "index.html")).href
+      : svc.url;
+  view.webContents
+    .loadURL(targetUrl)
+    .catch((err) => {
+      console.error("Failed to load service", serviceId, err);
+    });
   attachNotificationListener(view, partitionId);
   return view;
 }
@@ -208,29 +218,20 @@ function attachNotificationListener(view, tabId) {
     const has = detectNotificationFromTitle(title);
     const meta = tabs.get(tabId);
     if (!meta) return;
+    // If already has notification and still inactive, avoid toggling off due to title changes.
+    if (meta.hasNotification && !has && tabId !== activeTabId) {
+      return;
+    }
     const changed = (meta.hasNotification || false) !== has;
     meta.hasNotification = has;
     if (changed) {
       console.log("[notify] tab", tabId, "title:", title, "hasNotification:", has);
-      if (has) {
+      if (has && tabId !== activeTabId) {
         meta.lastBadgeAt = Date.now();
         showBadgeNotification(tabId, title);
       }
       broadcastTabs();
     }
-  });
-
-  view.webContents.session.setPermissionRequestHandler((wc, permission, callback) => {
-    console.log("[notify] permission request", permission, "for tab", tabId);
-    if (permission === "notifications") {
-      return callback(true);
-    }
-    callback(false);
-  });
-
-  view.webContents.session.setPermissionCheckHandler((wc, permission) => {
-    if (permission === "notifications") return true;
-    return false;
   });
 
   view.webContents.on("notification", (_event, notification, callback) => {
@@ -255,7 +256,15 @@ function ensureNotificationPermission(partitionId) {
   const sess = session.fromPartition(`persist:${partitionId}`);
   stripUnloadPermissionPolicy(sess);
   console.log("[notify] setup permission handlers for partition", partitionId);
-  const allowed = new Set(["notifications", "media", "audioCapture", "videoCapture"]);
+  const allowed = new Set([
+    "notifications",
+    "media",
+    "camera",
+    "microphone",
+    "display-capture",
+    "audioCapture",
+    "videoCapture"
+  ]);
   sess.setPermissionRequestHandler((_, permission, callback) => {
     if (allowed.has(permission)) {
       return callback(true);
@@ -267,6 +276,51 @@ function ensureNotificationPermission(partitionId) {
     return false;
   });
   partitionHandlers.add(partitionId);
+}
+
+function ensureMediaPermission(partitionId) {
+  const key = `media:${partitionId}`;
+  if (mediaHandlers.has(key)) return;
+  const sess = session.fromPartition(`persist:${partitionId}`);
+  const allowed = new Set([
+    "notifications",
+    "media",
+    "camera",
+    "microphone",
+    "display-capture",
+    "audioCapture",
+    "videoCapture"
+  ]);
+  console.log("[media] setup handlers for partition", partitionId);
+  sess.setPermissionRequestHandler((details, permission, callback) => {
+    console.log("[media] permission request", permission, "origin", details?.embeddingOrigin);
+    if (allowed.has(permission)) {
+      return callback(true);
+    }
+    callback(false);
+  });
+  sess.setPermissionCheckHandler((_, permission) => {
+    return allowed.has(permission);
+  });
+  if (typeof sess.setDisplayMediaRequestHandler === "function") {
+    sess.setDisplayMediaRequestHandler((details, callback) => {
+      console.log("[media] display capture request", details);
+      callback({ video: true, audio: true });
+    });
+  }
+  mediaHandlers.add(key);
+
+  // Also patch defaultSession once for getDisplayMedia fallbacks.
+  if (!defaultMediaPatched) {
+    const ds = session.defaultSession;
+    if (typeof ds.setDisplayMediaRequestHandler === "function") {
+      ds.setDisplayMediaRequestHandler((details, callback) => {
+        console.log("[media] defaultSession display capture request", details);
+        callback({ video: true, audio: true });
+      });
+    }
+    defaultMediaPatched = true;
+  }
 }
 
 function createTab({ serviceId, title, color, loadView = true, id: fixedId }) {
