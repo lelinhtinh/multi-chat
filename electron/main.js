@@ -1,4 +1,12 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session, Notification } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  WebContentsView,
+  ipcMain,
+  session,
+  Notification,
+  desktopCapturer
+} = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
@@ -27,6 +35,7 @@ const partitionHandlers = new Set();
 const mediaHandlers = new Set();
 let defaultMediaPatched = false;
 const partitionPolicyPatched = new Set();
+let mediaPickerInProgress = false;
 
 // Disable Chrome autofill features to avoid DevTools warnings.
 app.commandLine.appendSwitch("disable-features", "Autofill,AutofillServerCommunication");
@@ -168,6 +177,7 @@ function buildView(serviceId, partitionId) {
   const svc = findService(serviceId);
   if (!svc) return null;
   ensureNotificationPermission(partitionId);
+  ensureMediaPermission(partitionId);
   const view = new WebContentsView({
     webPreferences: {
       partition: `persist:${partitionId}`,
@@ -305,7 +315,7 @@ function ensureMediaPermission(partitionId) {
   if (typeof sess.setDisplayMediaRequestHandler === "function") {
     sess.setDisplayMediaRequestHandler((details, callback) => {
       console.log("[media] display capture request", details);
-      callback({ video: true, audio: true });
+      handleDisplayMediaRequest(details, callback);
     });
   }
   mediaHandlers.add(key);
@@ -316,11 +326,176 @@ function ensureMediaPermission(partitionId) {
     if (typeof ds.setDisplayMediaRequestHandler === "function") {
       ds.setDisplayMediaRequestHandler((details, callback) => {
         console.log("[media] defaultSession display capture request", details);
-        callback({ video: true, audio: true });
+        handleDisplayMediaRequest(details, callback);
       });
     }
     defaultMediaPatched = true;
   }
+}
+
+async function handleDisplayMediaRequest(details, callback) {
+  let settled = false;
+  const safeCallback = (result) => {
+    if (settled) return;
+    settled = true;
+    try {
+      callback(result);
+    } catch (_err) {
+      // ignore follow-up failures
+    }
+  };
+
+  // Prevent overlapping pickers if multiple requests race.
+  if (mediaPickerInProgress) {
+    console.warn("[media] picker already open, denying request");
+    safeCallback({ video: null, audio: null });
+    return;
+  }
+
+  mediaPickerInProgress = true;
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ["screen", "window"],
+      fetchWindowIcons: true,
+      thumbnailSize: { width: 320, height: 200 }
+    });
+    if (!sources.length) {
+      console.warn("[media] no capture sources available");
+      safeCallback({ video: null, audio: null });
+      return;
+    }
+
+    const selectedIndex = await showMediaPickerWindow(sources);
+    if (selectedIndex === null) {
+      console.log("[media] user cancelled screen share picker");
+      safeCallback({ video: null, audio: null });
+      return;
+    }
+
+    const source = sources[selectedIndex];
+    if (!source) {
+      console.warn("[media] invalid picker selection index", selectedIndex);
+      safeCallback({ video: null, audio: null });
+      return;
+    }
+
+    safeCallback({
+      video: source,
+      audio: details?.audioRequested ? "loopback" : null
+    });
+  } catch (err) {
+    console.warn("[media] display capture handler error", err);
+    safeCallback({ video: null, audio: null });
+  } finally {
+    mediaPickerInProgress = false;
+  }
+}
+
+function formatSourceLabel(source, index) {
+  if (!source) return `Nguồn ${index + 1}`;
+  return source.name || `Nguồn ${index + 1}`;
+}
+
+function buildPickerHtml({ channel, items }) {
+  const payload = JSON.stringify(items);
+  const sanitizedChannel = JSON.stringify(channel);
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Chọn nguồn chia sẻ màn hình</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 14px; font-family: "Segoe UI", Arial, sans-serif; background: #0f172a; color: #e2e8f0; }
+    h1 { margin: 0 0 10px; font-size: 18px; }
+    #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+    .item { border: 1px solid #1e293b; background: #111827; border-radius: 10px; padding: 8px; cursor: pointer; text-align: left; transition: border-color 120ms ease, transform 120ms ease; color: inherit; }
+    .item:hover { border-color: #38bdf8; transform: translateY(-1px); }
+    .thumb { width: 100%; height: 120px; border-radius: 6px; object-fit: cover; background: #0b1224; display: block; margin-bottom: 6px; }
+    .label { display: block; font-size: 13px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #actions { margin-top: 10px; text-align: right; }
+    button.action { padding: 8px 12px; border-radius: 8px; border: 1px solid #1e293b; background: #0b1224; color: #e2e8f0; cursor: pointer; }
+    button.action:hover { border-color: #38bdf8; color: #38bdf8; }
+  </style>
+</head>
+<body>
+  <h1>Chọn cửa sổ hoặc màn hình</h1>
+  <div id="grid"></div>
+  <div id="actions"><button class="action" id="cancel">Hủy</button></div>
+  <script>
+    const { ipcRenderer } = require("electron");
+    const channel = ${sanitizedChannel};
+    const items = ${payload};
+    const grid = document.getElementById("grid");
+    const sendChoice = (index) => ipcRenderer.send(channel, index);
+    items.forEach((item, idx) => {
+      const btn = document.createElement("button");
+      btn.className = "item";
+      btn.title = item.label;
+      const img = document.createElement("img");
+      img.className = "thumb";
+      img.alt = item.label;
+      img.src = item.thumbnail || "";
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = item.label;
+      btn.append(img, label);
+      btn.addEventListener("click", () => sendChoice(idx));
+      btn.addEventListener("dblclick", () => sendChoice(idx));
+      grid.appendChild(btn);
+    });
+    document.getElementById("cancel").addEventListener("click", () => sendChoice(null));
+    window.addEventListener("keydown", (e) => { if (e.key === "Escape") sendChoice(null); });
+  </script>
+</body>
+</html>`;
+}
+
+function showMediaPickerWindow(sources) {
+  return new Promise((resolve) => {
+    const pickerId = `media-picker-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    const channel = `media-picker:choose:${pickerId}`;
+    const items = sources.map((s, idx) => ({
+      id: s.id,
+      label: formatSourceLabel(s, idx),
+      thumbnail: s.thumbnail?.toDataURL?.() || ""
+    }));
+
+    const picker = new BrowserWindow({
+      width: 520,
+      height: 600,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      autoHideMenuBar: true,
+      backgroundColor: "#0f172a",
+      title: "Chọn nguồn chia sẻ màn hình",
+      parent: mainWindow ?? undefined,
+      modal: !!mainWindow,
+      webPreferences: {
+        nodeIntegration: true,
+        contextIsolation: false,
+        sandbox: false
+      }
+    });
+
+    let done = false;
+    const finish = (index) => {
+      if (done) return;
+      done = true;
+      ipcMain.removeAllListeners(channel);
+      if (!picker.isDestroyed()) {
+        picker.close();
+      }
+      resolve(typeof index === "number" ? index : null);
+    };
+
+    ipcMain.once(channel, (_event, index) => finish(index));
+    picker.on("closed", () => finish(null));
+
+    const html = buildPickerHtml({ channel, items });
+    picker.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+  });
 }
 
 function createTab({ serviceId, title, color, loadView = true, id: fixedId }) {
