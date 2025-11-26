@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 const path = require("path");
 const fs = require("fs");
 
-const ICON_NAMES = ["telegram", "messenger", "discord", "gmail", "test"];
+const ICON_NAMES = ["telegram", "messenger", "discord", "gmail", "test", "lock", "lark", "zalo"];
 
 function loadSvg(name) {
   try {
@@ -27,6 +27,10 @@ contextBridge.exposeInMainWorld("multiChat", {
   activateTab: (tabId) => ipcRenderer.invoke("tabs:activate", tabId),
   closeTab: (tabId) => ipcRenderer.invoke("tabs:close", tabId),
   renameTab: (tabId, title) => ipcRenderer.invoke("tabs:rename", { tabId, title }),
+  setTabPasscode: (tabId, passcode) => ipcRenderer.invoke("tabs:set-passcode", { tabId, passcode }),
+  lockTab: (tabId) => ipcRenderer.invoke("tabs:lock", tabId),
+  unlockTab: (tabId, passcode) => ipcRenderer.invoke("tabs:unlock", { tabId, passcode }),
+  clearTabPasscode: (tabId, passcode) => ipcRenderer.invoke("tabs:clear-passcode", { tabId, passcode }),
   reloadTab: () => ipcRenderer.invoke("tabs:reload"),
   toggleDevtools: () => ipcRenderer.invoke("devtools:toggle"),
   hideActiveView: () => ipcRenderer.invoke("view:hide-active"),

@@ -51,6 +51,10 @@
         max-height: 220px;
         background: #000;
       }
+      .ghost {
+        margin-left: 8px;
+        opacity: 0.7;
+      }
     </style>
   </head>
   <body>
@@ -74,6 +78,11 @@
         <h3>Screen Capture</h3>
         <button id="screen">Share Screen</button>
         <video id="screen-video" autoplay muted playsinline></video>
+      </div>
+      <div class="card">
+        <h3>Fullscreen</h3>
+        <button id="enter-fullscreen">Enter fullscreen</button>
+        <button id="exit-fullscreen" class="ghost">Exit fullscreen</button>
       </div>
     </div>
     <div class="card" style="margin-top: 16px">
@@ -133,6 +142,35 @@
           log("Screen capture started");
         } catch (err) {
           log("Screen error: " + err);
+        }
+      };
+
+      const enterBtn = document.getElementById("enter-fullscreen");
+      const exitBtn = document.getElementById("exit-fullscreen");
+      const updateFsButtons = () => {
+        const isFs = !!document.fullscreenElement;
+        enterBtn.style.display = isFs ? "none" : "inline-block";
+        exitBtn.style.display = isFs ? "inline-block" : "none";
+      };
+      updateFsButtons();
+
+      document.addEventListener("fullscreenchange", updateFsButtons);
+
+      enterBtn.onclick = async () => {
+        try {
+          await document.documentElement.requestFullscreen();
+          log("Entered fullscreen");
+        } catch (err) {
+          log("Fullscreen error: " + err);
+        }
+      };
+
+      exitBtn.onclick = async () => {
+        try {
+          await document.exitFullscreen();
+          log("Exited fullscreen");
+        } catch (err) {
+          log("Exit fullscreen error: " + err);
         }
       };
     </script>

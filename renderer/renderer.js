@@ -28,8 +28,9 @@ let dragPointerId = null;
 let dragStartX = 0;
 let dragStartScroll = 0;
 let ignoreClick = false;
+let unlockError = "";
 
-function createPrompt(defaultValue = "") {
+function createPrompt(defaultValue = "", labelText = "Nhập tên tab", type = "text") {
   return new Promise((resolve) => {
     overlayOpen = true;
     const backdrop = document.createElement("div");
@@ -37,9 +38,9 @@ function createPrompt(defaultValue = "") {
     const modal = document.createElement("div");
     modal.className = "modal";
     const label = document.createElement("label");
-    label.textContent = "Nhập tên tab";
+    label.textContent = labelText;
     const input = document.createElement("input");
-    input.type = "text";
+    input.type = type;
     input.value = defaultValue;
     const actions = document.createElement("div");
     actions.className = "modal-actions";
@@ -85,6 +86,10 @@ function getService(id) {
   return services.find((s) => s.id === id);
 }
 
+function getTab(id) {
+  return tabs.find((t) => t.id === id);
+}
+
 function pickColor() {
   const used = new Set(tabs.map((t) => t.color));
   const available = COLOR_PALETTE.filter((c) => !used.has(c));
@@ -119,14 +124,19 @@ function renderTabs() {
     btn.style.borderColor = tab.color;
     const iconSpan = document.createElement("span");
     iconSpan.className = "icon";
-    if (tab.hasNotification) {
-      iconSpan.style.color = tab.color;
+    let iconHtml = icons[svc?.iconKey];
+    let iconColor = tab.hasNotification ? tab.color : "";
+    if (tab.locked) {
+      iconHtml = icons["lock"] || "🔒";
+      iconColor = "#ff6b6b";
     }
-    const iconHtml = icons[svc?.iconKey];
     if (iconHtml) {
       iconSpan.innerHTML = iconHtml;
     } else {
       iconSpan.textContent = svc?.icon || "●";
+    }
+    if (iconColor) {
+      iconSpan.style.color = iconColor;
     }
     const label = document.createElement("span");
     label.className = "tab-label";
@@ -147,15 +157,49 @@ function renderTabs() {
     tabsContainer.appendChild(btn);
   });
 
-  if (placeholder) {
-    if (!activeTabId) {
-      placeholder.textContent = "Chọn dịch vụ ở sidebar để mở.";
-    } else {
-      const activeTab = tabs.find((t) => t.id === activeTabId);
-      const svc = getService(activeTab?.serviceId);
-      placeholder.textContent = `Đang mở ${activeTab?.title || svc?.name || ""}.`;
-    }
+  renderPlaceholder();
+}
+
+function renderPlaceholder() {
+  if (!placeholder) return;
+  if (!activeTabId) {
+    placeholder.innerHTML = "<p>Chọn dịch vụ ở sidebar để mở.</p>";
+    return;
   }
+  const activeTab = getTab(activeTabId);
+  const svc = getService(activeTab?.serviceId);
+  if (activeTab?.locked) {
+    const errorHtml = unlockError ? `<div class="lock-error">${unlockError}</div>` : "";
+    placeholder.innerHTML = `
+      <div class="lock-card">
+        <div class="lock-hero">🔒</div>
+        <h2>${activeTab.title || svc?.name || "Tab"} đã bị khóa</h2>
+        <p>Nhập mã để mở khóa tab này.</p>
+        <form id="unlock-form">
+          <input id="unlock-input" type="password" autocomplete="current-password" placeholder="Mã mở khóa" />
+          ${errorHtml}
+          <button type="submit">Mở khóa</button>
+        </form>
+      </div>
+    `;
+    const form = placeholder.querySelector("#unlock-form");
+    const input = placeholder.querySelector("#unlock-input");
+    form?.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const code = input?.value?.trim() || "";
+      const res = await window.multiChat.unlockTab?.(activeTabId, code);
+      if (res?.ok) {
+        unlockError = "";
+        await window.multiChat.showActiveView?.();
+      } else {
+        unlockError = "Mã không đúng. Thử lại.";
+      }
+      renderPlaceholder();
+    });
+    input?.focus();
+    return;
+  }
+  placeholder.innerHTML = `<p>Đang mở ${activeTab?.title || svc?.name || ""}.</p>`;
 }
 
 async function promptNewTab(serviceId) {
@@ -192,6 +236,10 @@ async function showTabMenu(tab, e) {
   menu.addEventListener("contextmenu", (ev) => ev.preventDefault());
   const renameBtn = document.createElement("button");
   renameBtn.textContent = "Đổi tên tab";
+  const lockBtn = document.createElement("button");
+  lockBtn.textContent = "Khóa tab";
+  const clearPassBtn = document.createElement("button");
+  clearPassBtn.textContent = "Gỡ khóa";
   const closeBtn = document.createElement("button");
   closeBtn.textContent = "Xóa tab";
 
@@ -204,12 +252,58 @@ async function showTabMenu(tab, e) {
     await window.multiChat.showActiveView?.();
   });
 
+  lockBtn.addEventListener("click", async () => {
+    await closeMenu();
+    await window.multiChat.hideActiveView?.();
+    const latest = getTab(tab.id);
+    if (!latest?.hasPasscode) {
+      const pass = await createPrompt("", "Nhập mã khóa cho tab", "password");
+      if (!pass) {
+        await window.multiChat.showActiveView?.();
+        return;
+      }
+      const res = await window.multiChat.setTabPasscode?.(tab.id, pass);
+      if (!res?.ok) {
+        unlockError = "Không thể đặt mã khóa.";
+      } else {
+        unlockError = "";
+      }
+    } else {
+      await window.multiChat.lockTab?.(tab.id);
+      unlockError = "";
+    }
+    await window.multiChat.showActiveView?.();
+    renderPlaceholder();
+  });
+
+  clearPassBtn.addEventListener("click", async () => {
+    await closeMenu();
+    await window.multiChat.hideActiveView?.();
+    const pass = await createPrompt("", "Nhập mã hiện tại để gỡ khóa", "password");
+    if (!pass) {
+      await window.multiChat.showActiveView?.();
+      return;
+    }
+    const res = await window.multiChat.clearTabPasscode?.(tab.id, pass);
+    if (!res?.ok) {
+      unlockError = "Mã không đúng.";
+    } else {
+      unlockError = "";
+    }
+    await window.multiChat.showActiveView?.();
+    renderPlaceholder();
+  });
+
   closeBtn.addEventListener("click", async () => {
     await closeMenu();
     await window.multiChat.closeTab?.(tab.id);
   });
 
-  menu.append(renameBtn, closeBtn);
+  menu.append(renameBtn, lockBtn);
+  if (tab.hasPasscode) {
+    menu.append(clearPassBtn);
+  }
+  menu.append(closeBtn);
   document.body.appendChild(menu);
 
   // Position within viewport bounds.
@@ -239,7 +333,11 @@ window.addEventListener("keydown", (e) => {
 
 function handleTabsUpdate(payload) {
   tabs = payload.tabs || [];
+  const prevActive = activeTabId;
   activeTabId = payload.activeTabId || null;
+  if (prevActive !== activeTabId) {
+    unlockError = "";
+  }
   renderTabs();
   updateTabArrows();
 }

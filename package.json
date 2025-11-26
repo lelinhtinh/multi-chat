@@ -1,11 +1,12 @@
 {
   "name": "multi-chat",
   "version": "0.1.0",
-  "description": "Multi-service chat wrapper using Electron WebContentsView",
+  "description": "Multi-service webapp wrapper",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "build": "electron-builder --win"
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux deb"
   },
   "devDependencies": {
     "electron": "^39.2.3",
@@ -17,13 +18,22 @@
     "files": [
       "electron/**/*",
       "renderer/**/*",
+      "build/icons/**",
       "package.json"
     ],
     "asar": true,
     "directories": {
       "output": "dist"
     },
+    "linux": {
+      "target": [
+        "deb"
+      ],
+      "category": "Internet",
+      "icon": "build/icons/256x256.png"
+    },
     "win": {
+      "icon": "build/icons/icon.ico",
       "target": "nsis",
       "signAndEditExecutable": false
     }

@@ -10,21 +10,27 @@ const {
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("url");
+const crypto = require("crypto");
+
+const APP_NAME = "Multi Chat";
 
 const SERVICES = [
   { id: "telegram", name: "Telegram", url: "https://web.telegram.org/a", iconKey: "telegram" },
   { id: "messenger", name: "Messenger", url: "https://www.messenger.com/", iconKey: "messenger" },
   { id: "discord", name: "Discord", url: "https://discord.com/app", iconKey: "discord" },
+  { id: "lark", name: "Lark", url: "https://www.larksuite.com/messenger", iconKey: "lark" },
+  { id: "zalo", name: "Zalo", url: "https://chat.zalo.me/", iconKey: "zalo" },
   { id: "gmail", name: "Gmail", url: "https://mail.google.com/mail/u/0", iconKey: "gmail" },
   { id: "local-test", name: "Local API Test", url: "local-test", iconKey: "test" }
 ];
 
 const SIDEBAR_WIDTH = 72;
 const TOPBAR_HEIGHT = 64;
+const APP_ICON = path.join(__dirname, "..", "build", "icons", "icon.ico");
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36";
 
-/** @type {Map<string, {serviceId: string, title: string, color: string, hasNotification: boolean, lastBadgeAt?: number, view: WebContentsView | null}>} */
+/** @type {Map<string, {serviceId: string, title: string, color: string, hasNotification: boolean, lastBadgeAt?: number, view: WebContentsView | null, passcodeHash?: string | null, locked?: boolean}>} */
 const tabs = new Map();
 let activeTabId = null;
 let mainWindow = null;
@@ -36,6 +42,10 @@ const mediaHandlers = new Set();
 let defaultMediaPatched = false;
 const partitionPolicyPatched = new Set();
 let mediaPickerInProgress = false;
+const lockTimers = new Map();
+let titleUpdateTimer = null;
+let pendingTitleLabel = null;
+let lastAppliedTitle = "";
 
 // Disable Chrome autofill features to avoid DevTools warnings.
 app.commandLine.appendSwitch("disable-features", "Autofill,AutofillServerCommunication");
@@ -43,6 +53,36 @@ app.commandLine.appendSwitch("disable-blink-features", "Autofill");
 
 // Set App User Model ID (required for notifications on Windows).
 app.setAppUserModelId("com.multichat.app");
+
+function setAppTitle(label) {
+  if (!mainWindow) return;
+  const nextTitle = label ? `${APP_NAME} - ${label}` : APP_NAME;
+  mainWindow.setTitle(nextTitle);
+  lastAppliedTitle = label || "";
+  pendingTitleLabel = null;
+  if (titleUpdateTimer) {
+    clearTimeout(titleUpdateTimer);
+    titleUpdateTimer = null;
+  }
+}
+
+function scheduleActiveAppTitle(label) {
+  if (!mainWindow) return;
+  if (label === lastAppliedTitle) return;
+  pendingTitleLabel = label || "";
+  if (titleUpdateTimer) return;
+  titleUpdateTimer = setTimeout(() => {
+    titleUpdateTimer = null;
+    if (pendingTitleLabel !== lastAppliedTitle) {
+      setAppTitle(pendingTitleLabel);
+    }
+  }, 400);
+}
+
+function hashPasscode(passcode) {
+  const input = typeof passcode === "string" ? passcode.trim() : "";
+  return crypto.createHash("sha256").update(input).digest("hex");
+}
 
 function stripUnloadPermissionPolicy(sess) {
   if (partitionPolicyPatched.has(sess)) return;
@@ -104,7 +144,9 @@ function persistState() {
         id,
         serviceId: meta.serviceId,
         title: meta.title,
-        color: meta.color
+        color: meta.color,
+        passcodeHash: meta.passcodeHash || null,
+        locked: !!meta.locked
       })),
       activeTabId
     };
@@ -118,7 +160,8 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: "Multi Chat",
+    title: APP_NAME,
+    icon: APP_ICON,
     titleBarStyle: "default",
     frame: true,
     autoHideMenuBar: false,
@@ -160,7 +203,7 @@ function findService(id) {
 function layoutActiveView() {
   if (!mainWindow || !activeTabId) return;
   const meta = tabs.get(activeTabId);
-  if (!meta) return;
+  if (!meta || meta.locked || !meta.view) return;
   currentAttachedView = meta.view;
   const { width, height } = mainWindow.getContentBounds();
   const w = Math.max(200, width - SIDEBAR_WIDTH);
@@ -242,6 +285,9 @@ function attachNotificationListener(view, tabId) {
       }
       broadcastTabs();
     }
+    if (tabId === activeTabId && !meta.locked) {
+      scheduleActiveAppTitle(title || meta.title || findService(meta.serviceId)?.name || APP_NAME);
+    }
   });
 
   view.webContents.on("notification", (_event, notification, callback) => {
@@ -273,7 +319,8 @@ function ensureNotificationPermission(partitionId) {
     "microphone",
     "display-capture",
     "audioCapture",
-    "videoCapture"
+    "videoCapture",
+    "fullscreen"
   ]);
   sess.setPermissionRequestHandler((_, permission, callback) => {
     if (allowed.has(permission)) {
@@ -299,7 +346,8 @@ function ensureMediaPermission(partitionId) {
     "microphone",
     "display-capture",
     "audioCapture",
-    "videoCapture"
+    "videoCapture",
+    "fullscreen"
   ]);
   console.log("[media] setup handlers for partition", partitionId);
   sess.setPermissionRequestHandler((details, permission, callback) => {
@@ -498,12 +546,143 @@ function showMediaPickerWindow(sources) {
   });
 }
 
-function createTab({ serviceId, title, color, loadView = true, id: fixedId }) {
+function clearAutoLock(tabId) {
+  const timer = lockTimers.get(tabId);
+  if (timer) {
+    clearTimeout(timer);
+  }
+  lockTimers.delete(tabId);
+}
+
+function scheduleAutoLock(tabId) {
+  const meta = tabs.get(tabId);
+  if (!meta || !meta.passcodeHash || meta.locked) return;
+  clearAutoLock(tabId);
+  const handle = setTimeout(() => {
+    lockTab(tabId);
+  }, 15 * 60 * 1000);
+  lockTimers.set(tabId, handle);
+}
+
+function detachTabView(tabId) {
+  const meta = tabs.get(tabId);
+  if (!meta?.view || !mainWindow) return;
+  const targetView = meta.view;
+  try {
+    mainWindow.contentView.removeChildView(targetView);
+  } catch (_err) {
+    // ignore
+  }
+  try {
+    targetView.setVisible(false);
+    targetView.setBounds({ x: -5000, y: -5000, width: 1, height: 1 });
+  } catch (_err) {
+    // ignore
+  }
+  if (currentAttachedView === targetView) {
+    currentAttachedView = null;
+  }
+  if (activeTabId === tabId) {
+    detachedView = null;
+  }
+}
+
+function lockTab(tabId) {
+  const meta = tabs.get(tabId);
+  if (!meta) return { ok: false, reason: "not_found" };
+  if (!meta.passcodeHash) return { ok: false, reason: "no_passcode" };
+  meta.locked = true;
+  clearAutoLock(tabId);
+  if (activeTabId === tabId) {
+    detachTabView(tabId);
+  }
+  persistState();
+  broadcastTabs();
+  return { ok: true };
+}
+
+function ensureViewForTab(tabId) {
+  const meta = tabs.get(tabId);
+  if (!meta || meta.locked) return null;
+  if (!meta.view) {
+    meta.view = buildView(meta.serviceId, tabId);
+  }
+  return meta.view;
+}
+
+function unlockTab(tabId, passcode) {
+  const meta = tabs.get(tabId);
+  if (!meta) return { ok: false, reason: "not_found" };
+  if (meta.passcodeHash) {
+    const hashed = hashPasscode(passcode);
+    if (hashed !== meta.passcodeHash) {
+      return { ok: false, reason: "invalid_passcode" };
+    }
+  }
+  meta.locked = false;
+  clearAutoLock(tabId);
+  ensureViewForTab(tabId);
+  if (activeTabId === tabId) {
+    attachTabView(tabId);
+    layoutActiveView();
+  }
+  persistState();
+  broadcastTabs();
+  return { ok: true };
+}
+
+function setTabPasscode(tabId, passcode) {
+  const meta = tabs.get(tabId);
+  if (!meta) return { ok: false, reason: "not_found" };
+  const trimmed = typeof passcode === "string" ? passcode.trim() : "";
+  if (!trimmed) return { ok: false, reason: "empty_passcode" };
+  meta.passcodeHash = hashPasscode(trimmed);
+  meta.locked = true;
+  clearAutoLock(tabId);
+  if (activeTabId === tabId) {
+    detachTabView(tabId);
+  }
+  persistState();
+  broadcastTabs();
+  return { ok: true };
+}
+
+function clearTabPasscode(tabId, passcode) {
+  const meta = tabs.get(tabId);
+  if (!meta) return { ok: false, reason: "not_found" };
+  if (!meta.passcodeHash) return { ok: false, reason: "no_passcode" };
+  const hashed = hashPasscode(passcode);
+  if (hashed !== meta.passcodeHash) {
+    return { ok: false, reason: "invalid_passcode" };
+  }
+  meta.passcodeHash = null;
+  meta.locked = false;
+  clearAutoLock(tabId);
+  ensureViewForTab(tabId);
+  if (activeTabId === tabId) {
+    attachTabView(tabId);
+    layoutActiveView();
+  }
+  persistState();
+  broadcastTabs();
+  return { ok: true };
+}
+
+function createTab({ serviceId, title, color, loadView = true, id: fixedId, passcodeHash = null, locked = false }) {
   const svc = findService(serviceId);
   if (!svc) return null;
   const id = fixedId || `tab-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const view = loadView ? buildView(serviceId, id) : null;
-  tabs.set(id, { serviceId, title: title || svc.name, color, hasNotification: false, view });
+  const shouldLock = locked || !!passcodeHash;
+  const view = loadView && !shouldLock ? buildView(serviceId, id) : null;
+  tabs.set(id, {
+    serviceId,
+    title: title || svc.name,
+    color,
+    hasNotification: false,
+    view,
+    passcodeHash: passcodeHash || null,
+    locked: shouldLock
+  });
   persistState();
   return { id, serviceId, title: title || svc.name, color };
 }
@@ -518,13 +697,20 @@ function attachTabView(tabId) {
       console.warn("Failed removing previous view", err);
     }
   }
+  if (meta.locked) {
+    currentAttachedView = null;
+    detachedView = null;
+    return;
+  }
   if (!meta.view) {
     meta.view = buildView(meta.serviceId, tabId);
   }
-  mainWindow.contentView.addChildView(meta.view);
-  meta.view.webContents.focus();
-  currentAttachedView = meta.view;
-  detachedView = null;
+  if (meta.view) {
+    mainWindow.contentView.addChildView(meta.view);
+    meta.view.webContents.focus();
+    currentAttachedView = meta.view;
+    detachedView = null;
+  }
 }
 
 function broadcastTabs() {
@@ -536,7 +722,9 @@ function broadcastTabs() {
       serviceId: meta.serviceId,
       title: meta.title,
       color: meta.color,
-      hasNotification: meta.hasNotification || false
+      hasNotification: meta.hasNotification || false,
+      locked: !!meta.locked,
+      hasPasscode: !!meta.passcodeHash
     }))
   };
   mainWindow.webContents.send("tabs:updated", payload);
@@ -544,6 +732,7 @@ function broadcastTabs() {
 
 function removeTab(tabId) {
   if (!tabs.has(tabId)) return;
+  clearAutoLock(tabId);
   const meta = tabs.get(tabId);
   if (meta?.view) {
     try {
@@ -575,7 +764,12 @@ function removeTab(tabId) {
 
 function activateTab(tabId) {
   if (!tabs.has(tabId) || !mainWindow) return;
+  const previous = activeTabId;
+  if (previous && previous !== tabId) {
+    scheduleAutoLock(previous);
+  }
   activeTabId = tabId;
+  clearAutoLock(tabId);
   const meta = tabs.get(tabId);
   if (meta) {
     meta.hasNotification = false;
@@ -584,6 +778,8 @@ function activateTab(tabId) {
   layoutActiveView();
   persistState();
   broadcastTabs();
+  const label = meta?.title || findService(meta?.serviceId)?.name || APP_NAME;
+  setAppTitle(label);
 }
 
 function hideActiveView() {
@@ -610,6 +806,11 @@ function hideActiveView() {
 function showActiveView() {
   if (!mainWindow || !activeTabId) return;
   console.log("[view] showActiveView", { activeTabId, hasDetached: !!detachedView });
+  const meta = tabs.get(activeTabId);
+  if (meta?.locked) {
+    detachTabView(activeTabId);
+    return;
+  }
   if (detachedView) {
     try {
       mainWindow.contentView.addChildView(detachedView);
@@ -637,7 +838,7 @@ function restoreState() {
     saved.tabs.forEach((tab) => {
       if (findService(tab.serviceId)) {
         // Only active tab will load view immediately; others lazy.
-        const loadView = tab.id === saved.activeTabId;
+        const loadView = tab.id === saved.activeTabId && !tab.locked && !tab.passcodeHash;
         createTab({ ...tab, loadView });
       }
     });
@@ -673,6 +874,26 @@ ipcMain.handle("tabs:rename", async (_event, { tabId, title }) => {
   meta.title = title || meta.title;
   persistState();
   broadcastTabs();
+  if (tabId === activeTabId) {
+    const label = meta.title || findService(meta.serviceId)?.name || APP_NAME;
+    setAppTitle(label);
+  }
+});
+
+ipcMain.handle("tabs:set-passcode", async (_event, { tabId, passcode }) => {
+  return setTabPasscode(tabId, passcode);
+});
+
+ipcMain.handle("tabs:lock", async (_event, tabId) => {
+  return lockTab(tabId);
+});
+
+ipcMain.handle("tabs:unlock", async (_event, { tabId, passcode }) => {
+  return unlockTab(tabId, passcode);
+});
+
+ipcMain.handle("tabs:clear-passcode", async (_event, { tabId, passcode }) => {
+  return clearTabPasscode(tabId, passcode);
 });
 
 ipcMain.handle("tabs:reload", async () => {
@@ -689,7 +910,9 @@ ipcMain.handle("state:get", async () => {
       id,
       serviceId: meta.serviceId,
       title: meta.title,
-      color: meta.color
+      color: meta.color,
+      locked: !!meta.locked,
+      hasPasscode: !!meta.passcodeHash
     })),
     activeTabId
   };
