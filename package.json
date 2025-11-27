@@ -30,7 +30,8 @@
         "deb"
       ],
       "category": "Internet",
-      "icon": "build/icons/256x256.png"
+      "icon": "build/icons/256x256.png",
+      "maintainer": "Chat GPT <openai@example.com>"
     },
     "win": {
       "icon": "build/icons/icon.ico",

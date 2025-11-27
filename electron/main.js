@@ -5,7 +5,10 @@ const {
   ipcMain,
   session,
   Notification,
-  desktopCapturer
+  desktopCapturer,
+  Tray,
+  Menu,
+  nativeImage
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -26,7 +29,10 @@ const SERVICES = [
 
 const SIDEBAR_WIDTH = 72;
 const TOPBAR_HEIGHT = 64;
-const APP_ICON = path.join(__dirname, "..", "build", "icons", "icon.ico");
+const ICON_DEV = path.join(__dirname, "..", "build", "icons", "128x128.png");
+const ICON_PROD = path.join(process.resourcesPath || __dirname, "build", "icons", "128x128.png");
+const APP_ICON = [ICON_PROD, ICON_DEV].find((p) => fs.existsSync(p)) || ICON_DEV;
+const TRAY_ICON = [ICON_PROD, ICON_DEV].find((p) => fs.existsSync(p)) || ICON_DEV;
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36";
 
@@ -41,6 +47,9 @@ const partitionHandlers = new Set();
 const mediaHandlers = new Set();
 let defaultMediaPatched = false;
 const partitionPolicyPatched = new Set();
+let tray = null;
+let isQuitting = false;
+
 let mediaPickerInProgress = false;
 const lockTimers = new Map();
 let titleUpdateTimer = null;
@@ -53,6 +62,20 @@ app.commandLine.appendSwitch("disable-blink-features", "Autofill");
 
 // Set App User Model ID (required for notifications on Windows).
 app.setAppUserModelId("com.multichat.app");
+
+const singleInstance = app.requestSingleInstanceLock();
+if (!singleInstance) {
+  app.quit();
+  process.exit(0);
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
 
 function setAppTitle(label) {
   if (!mainWindow) return;
@@ -146,7 +169,7 @@ function persistState() {
         title: meta.title,
         color: meta.color,
         passcodeHash: meta.passcodeHash || null,
-        locked: !!meta.locked
+        locked: meta.passcodeHash ? true : false
       })),
       activeTabId
     };
@@ -156,6 +179,41 @@ function persistState() {
   }
 }
 
+
+function createTray() {
+  const baseImg = nativeImage.createFromPath(TRAY_ICON);
+  const iconImg = baseImg.isEmpty() ? nativeImage.createEmpty() : baseImg.resize({ width: 24, height: 24 });
+  tray = new Tray(iconImg);
+  tray.setToolTip(APP_NAME);
+  const menu = Menu.buildFromTemplate([
+    {
+      label: 'Hiện cửa sổ',
+      click: () => {
+        if (mainWindow) {
+          if (mainWindow.isMinimized()) mainWindow.restore();
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Thoát',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]);
+  tray.setContextMenu(menu);
+  tray.on('click', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -184,6 +242,13 @@ function createWindow() {
     if (isToggle || isF12) {
       event.preventDefault();
       toggleActiveDevtools();
+    }
+  });
+
+  mainWindow.on("close", (e) => {
+    if (!isQuitting) {
+      e.preventDefault();
+      mainWindow.hide();
     }
   });
 
@@ -277,6 +342,7 @@ function attachNotificationListener(view, tabId) {
     }
     const changed = (meta.hasNotification || false) !== has;
     meta.hasNotification = has;
+    if (meta.passcodeHash) return;
     if (changed) {
       console.log("[notify] tab", tabId, "title:", title, "hasNotification:", has);
       if (has && tabId !== activeTabId) {
@@ -285,7 +351,7 @@ function attachNotificationListener(view, tabId) {
       }
       broadcastTabs();
     }
-    if (tabId === activeTabId && !meta.locked) {
+    if (tabId === activeTabId && !meta.passcodeHash) {
       scheduleActiveAppTitle(title || meta.title || findService(meta.serviceId)?.name || APP_NAME);
     }
   });
@@ -690,6 +756,10 @@ function createTab({ serviceId, title, color, loadView = true, id: fixedId, pass
 function attachTabView(tabId) {
   const meta = tabs.get(tabId);
   if (!meta || !mainWindow) return;
+  if (meta.passcodeHash && tabId !== activeTabId) {
+    // do not show locked tab content without unlock
+    return;
+  }
   if (currentAttachedView) {
     try {
       mainWindow.contentView.removeChildView(currentAttachedView);
@@ -807,7 +877,7 @@ function showActiveView() {
   if (!mainWindow || !activeTabId) return;
   console.log("[view] showActiveView", { activeTabId, hasDetached: !!detachedView });
   const meta = tabs.get(activeTabId);
-  if (meta?.locked) {
+  if (meta?.passcodeHash) {
     detachTabView(activeTabId);
     return;
   }
@@ -944,6 +1014,7 @@ ipcMain.handle("notify", async (_event, payload) => {
 
 app.whenReady().then(() => {
   stripUnloadPermissionPolicy(session.defaultSession);
+  createTray();
   createWindow();
   restoreState();
   app.on("activate", () => {
