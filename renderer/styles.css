@@ -160,6 +160,7 @@ body {
   cursor: pointer;
   transition: all 0.2s ease;
   font-size: 14px;
+  position: relative;
 }
 
 .tab.active {
@@ -354,4 +355,18 @@ button.ghost:hover {
     height: 40px;
     border-radius: 10px;
   }
+}
+
+.tab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  background: #ff3b30;
+  color: #0b1021;
+  font-weight: 700;
+  font-size: 11px;
+  padding: 0 6px;
 }

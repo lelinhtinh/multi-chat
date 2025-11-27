@@ -29,10 +29,20 @@ const SERVICES = [
 
 const SIDEBAR_WIDTH = 72;
 const TOPBAR_HEIGHT = 64;
-const ICON_DEV = path.join(__dirname, "..", "build", "icons", "128x128.png");
-const ICON_PROD = path.join(process.resourcesPath || __dirname, "build", "icons", "128x128.png");
-const APP_ICON = [ICON_PROD, ICON_DEV].find((p) => fs.existsSync(p)) || ICON_DEV;
-const TRAY_ICON = [ICON_PROD, ICON_DEV].find((p) => fs.existsSync(p)) || ICON_DEV;
+const RES_BASE = process.resourcesPath || path.join(__dirname, "..");
+const iconPath = (file) => path.join(RES_BASE, "build", "icons", file);
+const APP_ICON = fs.existsSync(iconPath("256x256.png"))
+  ? iconPath("256x256.png")
+  : path.join(__dirname, "..", "build", "icons", "256x256.png");
+const APP_ICON_ALERT = fs.existsSync(iconPath("alert256.png"))
+  ? iconPath("alert256.png")
+  : path.join(__dirname, "..", "build", "icons", "alert256.png");
+const TRAY_ICON = fs.existsSync(iconPath("64x64.png"))
+  ? iconPath("64x64.png")
+  : path.join(__dirname, "..", "build", "icons", "64x64.png");
+const TRAY_ICON_ALERT = fs.existsSync(iconPath("alert64.png"))
+  ? iconPath("alert64.png")
+  : path.join(__dirname, "..", "build", "icons", "alert64.png");
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36";
 
@@ -49,6 +59,7 @@ let defaultMediaPatched = false;
 const partitionPolicyPatched = new Set();
 let tray = null;
 let isQuitting = false;
+let hasAnyNotification = false;
 
 let mediaPickerInProgress = false;
 const lockTimers = new Map();
@@ -185,6 +196,7 @@ function createTray() {
   const iconImg = baseImg.isEmpty() ? nativeImage.createEmpty() : baseImg.resize({ width: 24, height: 24 });
   tray = new Tray(iconImg);
   tray.setToolTip(APP_NAME);
+  tray.setContextMenu(Menu.buildFromTemplate([]));
   const menu = Menu.buildFromTemplate([
     {
       label: 'Hiện cửa sổ',
@@ -309,10 +321,35 @@ function buildView(serviceId, partitionId) {
 }
 
 function detectNotificationFromTitle(title) {
-  if (!title) return false;
-  return /[\[\(\{]?\d+[\]\)\}]?/.test(title) || title.includes("•");
+  if (!title) return { has: false, count: 0 };
+  const match = title.match(/[\[\(\{]?(\d+)[\]\)\}]?/);
+  if (match && match[1]) {
+    const count = parseInt(match[1], 10);
+    return { has: true, count: Number.isNaN(count) ? 1 : count };
+  }
+  if (title.includes("•")) {
+    return { has: true, count: 1 };
+  }
+  return { has: false, count: 0 };
 }
 
+
+function updateAppBadge() {
+  const unreadCount = Array.from(tabs.values()).reduce((sum, t) => sum + (t.badgeCount || (t.hasNotification ? 1 : 0)), 0);
+  hasAnyNotification = unreadCount > 0;
+  if (process.platform === "darwin" || process.platform === "linux") {
+    app.setBadgeCount(unreadCount);
+  } else if (mainWindow) {
+    const overlayImg = unreadCount > 0 ? nativeImage.createFromPath(APP_ICON_ALERT) : null;
+    mainWindow.setOverlayIcon(overlayImg, unreadCount > 0 ? `Bạn có ${unreadCount} thông báo` : "");
+  }
+  if (tray) {
+    const trayPath = unreadCount > 0 ? TRAY_ICON_ALERT : TRAY_ICON;
+    const img = nativeImage.createFromPath(trayPath).resize({ width: 24, height: 24 });
+    tray.setImage(img);
+    tray.setToolTip(unreadCount > 0 ? `${APP_NAME}: ${unreadCount} thông báo` : APP_NAME);
+  }
+}
 function showBadgeNotification(tabId, pageTitle) {
   const meta = tabs.get(tabId);
   if (!meta) return;
@@ -333,15 +370,16 @@ function showBadgeNotification(tabId, pageTitle) {
 
 function attachNotificationListener(view, tabId) {
   view.webContents.on("page-title-updated", (_event, title) => {
-    const has = detectNotificationFromTitle(title);
+    const { has, count } = detectNotificationFromTitle(title);
     const meta = tabs.get(tabId);
     if (!meta) return;
     // If already has notification and still inactive, avoid toggling off due to title changes.
     if (meta.hasNotification && !has && tabId !== activeTabId) {
       return;
     }
-    const changed = (meta.hasNotification || false) !== has;
+    const changed = (meta.hasNotification || false) !== has || (meta.badgeCount || 0) !== count;
     meta.hasNotification = has;
+    meta.badgeCount = count || 0;
     if (meta.passcodeHash) return;
     if (changed) {
       console.log("[notify] tab", tabId, "title:", title, "hasNotification:", has);
@@ -350,6 +388,7 @@ function attachNotificationListener(view, tabId) {
         showBadgeNotification(tabId, title);
       }
       broadcastTabs();
+      updateAppBadge();
     }
     if (tabId === activeTabId && !meta.passcodeHash) {
       scheduleActiveAppTitle(title || meta.title || findService(meta.serviceId)?.name || APP_NAME);
@@ -825,9 +864,11 @@ function removeTab(tabId) {
       activateTab(next);
     } else {
       broadcastTabs();
+      updateAppBadge();
     }
   } else {
     broadcastTabs();
+    updateAppBadge();
   }
   persistState();
 }
@@ -848,6 +889,7 @@ function activateTab(tabId) {
   layoutActiveView();
   persistState();
   broadcastTabs();
+  updateAppBadge();
   const label = meta?.title || findService(meta?.serviceId)?.name || APP_NAME;
   setAppTitle(label);
 }

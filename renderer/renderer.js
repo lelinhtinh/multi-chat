@@ -138,6 +138,14 @@ function renderTabs() {
     if (iconColor) {
       iconSpan.style.color = iconColor;
     }
+    const badge = document.createElement("span");
+    badge.className = "tab-badge";
+    if (tab.badgeCount > 1) {
+      badge.textContent = tab.badgeCount;
+      badge.style.backgroundColor = tab.color;
+    } else {
+      badge.style.display = "none";
+    }
     const label = document.createElement("span");
     label.className = "tab-label";
     if (tab.title.length > 14) {
@@ -148,7 +156,7 @@ function renderTabs() {
     } else {
       label.textContent = tab.title;
     }
-    btn.append(iconSpan, label);
+    btn.append(iconSpan, label, badge);
     btn.addEventListener("click", () => window.multiChat.activateTab(tab.id));
     btn.addEventListener("contextmenu", (e) => {
       e.preventDefault();
