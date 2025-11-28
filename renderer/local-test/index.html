@@ -26,6 +26,11 @@
         border-radius: 10px;
         padding: 14px;
       }
+      .card p.hint {
+        font-size: 13px;
+        color: #9aa5ce;
+        margin-top: 10px;
+      }
       button {
         padding: 10px 12px;
         border-radius: 8px;
@@ -37,6 +42,16 @@
       button:hover {
         border-color: #5ef2d6;
         color: #5ef2d6;
+      }
+      .notify-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .notify-actions button {
+        flex: 1 1 30%;
+        min-width: 120px;
       }
       pre {
         background: #0d1225;
@@ -65,6 +80,16 @@
         <button id="notify">Request + Show</button>
       </div>
       <div class="card">
+        <h3>Notification Adapters</h3>
+        <p>Gửi payload thử cho từng delivery mode của service <code>local-test</code>.</p>
+        <div class="notify-actions">
+          <button id="notify-webpush">WebPush</button>
+          <button id="notify-realtime">Realtime</button>
+          <button id="notify-fcm">FCM Native</button>
+        </div>
+        <p class="hint" id="notify-status">Chưa chạy bài test nào.</p>
+      </div>
+      <div class="card">
         <h3>Microphone</h3>
         <button id="mic">Open Mic</button>
         <audio id="mic-audio" controls></audio>
@@ -90,11 +115,82 @@
       <pre id="log"></pre>
     </div>
 
+    <script src="../notifications.js"></script>
     <script>
       const log = (msg) => {
         const pre = document.getElementById("log");
         pre.textContent += msg + "\n";
         pre.scrollTop = pre.scrollHeight;
+      };
+
+      const serviceUnderTest = "local-test";
+      const adapterStatus = document.getElementById("notify-status");
+
+      const setAdapterStatus = (text, ok = true) => {
+        adapterStatus.textContent = text;
+        adapterStatus.style.color = ok ? "#9aa5ce" : "#f7768e";
+      };
+
+      if (window.notificationHub) {
+        window.notificationHub
+          .configure([
+            {
+              id: serviceUnderTest,
+              name: "Local API Test",
+              deliveryMode: "realtime",
+              fallbackMode: "webpush",
+              deliveryConfig: {
+                realtime: {
+                  wsUrl: "ws://localhost:8787/notifications",
+                  sseUrl: ""
+                },
+                webpush: {
+                  vapidPublicKey: "",
+                  subscribeUrl: "http://localhost:8787/subscribe",
+                  serviceWorkerPath: "../sw.js"
+                },
+                fcmNative: {
+                  senderId: "",
+                  credentialsPath: ""
+                }
+              }
+            }
+          ])
+          .then(() => log(`[notify] Hub đã sẵn sàng cho ${serviceUnderTest}`))
+          .catch((err) => log(`[notify] Hub lỗi: ${err}`));
+      }
+
+      const testAdapter = async (mode) => {
+        const hub = window.notificationHub;
+        const timestamp = new Date().toLocaleTimeString();
+        if (!hub) {
+          const msg = `[${timestamp}] Hub chưa sẵn sàng, không thể test ${mode}.`;
+          log(msg);
+          setAdapterStatus(msg, false);
+          return;
+        }
+        const payload = {
+          title: `${mode} test @ ${timestamp}`,
+          body: `Ping ${mode} từ local-test`,
+          data: { serviceId: serviceUnderTest, issuedAt: Date.now(), mode }
+        };
+        setAdapterStatus(`Đang gửi ${mode}...`);
+        try {
+          let res;
+          if (typeof hub.notifyViaMode === "function") {
+            res = await hub.notifyViaMode(serviceUnderTest, mode, payload);
+          } else {
+            res = await hub.notify(serviceUnderTest, payload);
+          }
+          const ok = !!res?.ok;
+          const msg = `[${timestamp}] ${mode} => ${ok ? "OK" : "FAIL"} ${res?.reason || ""}`.trim();
+          log(msg);
+          setAdapterStatus(msg, ok);
+        } catch (err) {
+          const errMsg = `[${timestamp}] ${mode} lỗi: ${err}`;
+          log(errMsg);
+          setAdapterStatus(errMsg, false);
+        }
       };
 
       document.getElementById("notify").onclick = async () => {
@@ -109,6 +205,10 @@
           log("Notification error: " + err);
         }
       };
+
+      document.getElementById("notify-webpush").onclick = () => testAdapter("webpush");
+      document.getElementById("notify-realtime").onclick = () => testAdapter("realtime");
+      document.getElementById("notify-fcm").onclick = () => testAdapter("fcm-native");
 
       document.getElementById("mic").onclick = async () => {
         try {
@@ -173,6 +273,16 @@
           log("Exit fullscreen error: " + err);
         }
       };
+
+      window.addEventListener("realtime:message", (event) => {
+        const detail = event.detail || {};
+        log(`[Realtime] ${JSON.stringify(detail)}`);
+      });
+
+      window.addEventListener("webpush:message", (event) => {
+        const detail = event.detail || {};
+        log(`[WebPush] ${JSON.stringify(detail)}`);
+      });
     </script>
   </body>
  </html>

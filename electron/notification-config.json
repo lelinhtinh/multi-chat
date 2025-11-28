@@ -1,0 +1,75 @@
+{
+  "telegram": {
+    "deliveryMode": "webpush",
+    "fallbackMode": "realtime",
+    "webpush": {
+      "vapidPublicKey": "",
+      "subscribeUrl": "",
+      "serviceWorkerPath": "sw.js"
+    },
+    "realtime": {
+      "wsUrl": ""
+    }
+  },
+  "messenger": {
+    "deliveryMode": "webpush",
+    "fallbackMode": "realtime",
+    "webpush": {
+      "vapidPublicKey": "",
+      "subscribeUrl": "",
+      "serviceWorkerPath": "sw.js"
+    },
+    "realtime": {
+      "wsUrl": ""
+    }
+  },
+  "discord": {
+    "deliveryMode": "realtime",
+    "fallbackMode": "webpush",
+    "realtime": {
+      "wsUrl": ""
+    },
+    "webpush": {
+      "vapidPublicKey": "",
+      "subscribeUrl": "",
+      "serviceWorkerPath": "sw.js"
+    }
+  },
+  "lark": {
+    "deliveryMode": "realtime",
+    "realtime": {
+      "wsUrl": ""
+    }
+  },
+  "zalo": {
+    "deliveryMode": "realtime",
+    "realtime": {
+      "wsUrl": ""
+    }
+  },
+  "gmail": {
+    "deliveryMode": "webpush",
+    "webpush": {
+      "vapidPublicKey": "",
+      "subscribeUrl": "",
+      "serviceWorkerPath": "sw.js"
+    }
+  },
+  "local-test": {
+    "deliveryMode": "realtime",
+    "fallbackMode": "webpush",
+    "realtime": {
+      "wsUrl": "ws://localhost:8787/notifications",
+      "sseUrl": ""
+    },
+    "webpush": {
+      "vapidPublicKey": "",
+      "subscribeUrl": "http://localhost:8787/subscribe",
+      "serviceWorkerPath": "sw.js"
+    },
+    "fcmNative": {
+      "senderId": "",
+      "credentialsPath": ""
+    }
+  }
+}

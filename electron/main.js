@@ -17,7 +17,7 @@ const crypto = require("crypto");
 
 const APP_NAME = "Multi Chat";
 
-const SERVICES = [
+const BASE_SERVICES = [
   { id: "telegram", name: "Telegram", url: "https://web.telegram.org/a", iconKey: "telegram" },
   { id: "messenger", name: "Messenger", url: "https://www.messenger.com/", iconKey: "messenger" },
   { id: "discord", name: "Discord", url: "https://discord.com/app", iconKey: "discord" },
@@ -26,6 +26,16 @@ const SERVICES = [
   { id: "gmail", name: "Gmail", url: "https://mail.google.com/mail/u/0", iconKey: "gmail" },
   { id: "local-test", name: "Local API Test", url: "local-test", iconKey: "test" }
 ];
+const NOTIFICATION_CONFIG = loadNotificationConfig();
+const SERVICES = BASE_SERVICES.map((svc) => {
+  const deliveryConfig = NOTIFICATION_CONFIG[svc.id] || {};
+  return {
+    ...svc,
+    deliveryMode: deliveryConfig.deliveryMode || "none",
+    fallbackMode: deliveryConfig.fallbackMode || null,
+    deliveryConfig
+  };
+});
 
 const SIDEBAR_WIDTH = 72;
 const TOPBAR_HEIGHT = 64;
@@ -45,6 +55,24 @@ const TRAY_ICON_ALERT = fs.existsSync(iconPath("alert64.png"))
   : path.join(__dirname, "..", "build", "icons", "alert64.png");
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36";
+
+function loadNotificationConfig() {
+  const searchPaths = [
+    path.join(__dirname, "notification-config.json"),
+    path.join(app.getPath("userData"), "notification-config.json")
+  ];
+  for (const filePath of searchPaths) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, "utf-8");
+        return JSON.parse(raw);
+      }
+    } catch (err) {
+      console.warn("[notify] cannot read notification config", filePath, err);
+    }
+  }
+  return {};
+}
 
 /** @type {Map<string, {serviceId: string, title: string, color: string, hasNotification: boolean, lastBadgeAt?: number, view: WebContentsView | null, passcodeHash?: string | null, locked?: boolean}>} */
 const tabs = new Map();
@@ -180,7 +208,7 @@ function persistState() {
         title: meta.title,
         color: meta.color,
         passcodeHash: meta.passcodeHash || null,
-        locked: meta.passcodeHash ? true : false
+        locked: !!meta.locked
       })),
       activeTabId
     };
@@ -368,6 +396,34 @@ function showBadgeNotification(tabId, pageTitle) {
   }
 }
 
+function flagServiceNotification({ serviceId, title, body }) {
+  if (!serviceId) {
+    return { ok: false, reason: "missing_service" };
+  }
+  let touched = false;
+  let firstTabId = null;
+  tabs.forEach((meta, tabId) => {
+    if (meta.serviceId !== serviceId) return;
+    meta.hasNotification = true;
+    meta.badgeCount = Math.max(meta.badgeCount || 0, 1);
+    if (!firstTabId) {
+      firstTabId = tabId;
+    }
+    touched = true;
+  });
+  if (!touched) {
+    return { ok: false, reason: "no_tab" };
+  }
+  if (firstTabId) {
+    const fallbackTitle =
+      title || body || tabs.get(firstTabId)?.title || findService(serviceId)?.name || "Có thông báo mới";
+    showBadgeNotification(firstTabId, fallbackTitle);
+  }
+  broadcastTabs();
+  updateAppBadge();
+  return { ok: true };
+}
+
 function attachNotificationListener(view, tabId) {
   view.webContents.on("page-title-updated", (_event, title) => {
     const { has, count } = detectNotificationFromTitle(title);
@@ -380,7 +436,7 @@ function attachNotificationListener(view, tabId) {
     const changed = (meta.hasNotification || false) !== has || (meta.badgeCount || 0) !== count;
     meta.hasNotification = has;
     meta.badgeCount = count || 0;
-    if (meta.passcodeHash) return;
+    if (meta.locked) return;
     if (changed) {
       console.log("[notify] tab", tabId, "title:", title, "hasNotification:", has);
       if (has && tabId !== activeTabId) {
@@ -390,7 +446,7 @@ function attachNotificationListener(view, tabId) {
       broadcastTabs();
       updateAppBadge();
     }
-    if (tabId === activeTabId && !meta.passcodeHash) {
+    if (tabId === activeTabId && !meta.locked) {
       scheduleActiveAppTitle(title || meta.title || findService(meta.serviceId)?.name || APP_NAME);
     }
   });
@@ -777,7 +833,7 @@ function createTab({ serviceId, title, color, loadView = true, id: fixedId, pass
   const svc = findService(serviceId);
   if (!svc) return null;
   const id = fixedId || `tab-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const shouldLock = locked || !!passcodeHash;
+  const shouldLock = !!locked;
   const view = loadView && !shouldLock ? buildView(serviceId, id) : null;
   tabs.set(id, {
     serviceId,
@@ -795,8 +851,9 @@ function createTab({ serviceId, title, color, loadView = true, id: fixedId, pass
 function attachTabView(tabId) {
   const meta = tabs.get(tabId);
   if (!meta || !mainWindow) return;
-  if (meta.passcodeHash && tabId !== activeTabId) {
-    // do not show locked tab content without unlock
+  if (meta.locked) {
+    currentAttachedView = null;
+    detachedView = null;
     return;
   }
   if (currentAttachedView) {
@@ -805,11 +862,6 @@ function attachTabView(tabId) {
     } catch (err) {
       console.warn("Failed removing previous view", err);
     }
-  }
-  if (meta.locked) {
-    currentAttachedView = null;
-    detachedView = null;
-    return;
   }
   if (!meta.view) {
     meta.view = buildView(meta.serviceId, tabId);
@@ -919,7 +971,7 @@ function showActiveView() {
   if (!mainWindow || !activeTabId) return;
   console.log("[view] showActiveView", { activeTabId, hasDetached: !!detachedView });
   const meta = tabs.get(activeTabId);
-  if (meta?.passcodeHash) {
+  if (meta?.locked) {
     detachTabView(activeTabId);
     return;
   }
@@ -950,7 +1002,7 @@ function restoreState() {
     saved.tabs.forEach((tab) => {
       if (findService(tab.serviceId)) {
         // Only active tab will load view immediately; others lazy.
-        const loadView = tab.id === saved.activeTabId && !tab.locked && !tab.passcodeHash;
+        const loadView = tab.id === saved.activeTabId && !tab.locked;
         createTab({ ...tab, loadView });
       }
     });
@@ -960,6 +1012,22 @@ function restoreState() {
   } else {
     broadcastTabs();
   }
+}
+
+function startFcmNativeBridge({ serviceId, config }) {
+  const svc = findService(serviceId);
+  if (!svc) {
+    return { ok: false, reason: "unknown_service" };
+  }
+  const senderId = config?.senderId || svc.deliveryConfig?.fcmNative?.senderId;
+  if (!senderId) {
+    return { ok: false, reason: "missing_senderId" };
+  }
+  // Placeholder until an actual FCM native bridge is wired (e.g., electron-push-receiver).
+  console.warn(
+    "[fcm-native] start requested but native bridge is not configured. Install and wire electron-push-receiver or a custom bridge."
+  );
+  return { ok: false, reason: "not_configured" };
 }
 
 ipcMain.handle("services:list", async () => SERVICES);
@@ -1040,6 +1108,14 @@ ipcMain.handle("view:hide-active", async () => {
 
 ipcMain.handle("view:show-active", async () => {
   showActiveView();
+});
+
+ipcMain.handle("fcm-native:start", async (_event, payload) => {
+  return startFcmNativeBridge(payload || {});
+});
+
+ipcMain.handle("tabs:flag-notification", async (_event, payload) => {
+  return flagServiceNotification(payload || {});
 });
 
 ipcMain.handle("notify", async (_event, payload) => {

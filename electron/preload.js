@@ -40,5 +40,8 @@ contextBridge.exposeInMainWorld("multiChat", {
     ipcRenderer.on("tabs:updated", listener);
     return () => ipcRenderer.removeListener("tabs:updated", listener);
   },
-  getIcons: () => iconCache
+  getIcons: () => iconCache,
+  notifySystem: (payload) => ipcRenderer.invoke("notify", payload),
+  startFcmNative: ({ serviceId, config }) => ipcRenderer.invoke("fcm-native:start", { serviceId, config }),
+  flagServiceActivity: (payload) => ipcRenderer.invoke("tabs:flag-notification", payload)
 });

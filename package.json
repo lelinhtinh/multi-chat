@@ -6,7 +6,11 @@
   "scripts": {
     "start": "electron .",
     "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux deb"
+    "build:linux": "electron-builder --linux deb",
+    "mock:server": "node dev/mock-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "electron": "^39.2.3",

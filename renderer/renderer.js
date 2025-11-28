@@ -29,10 +29,37 @@ let dragStartX = 0;
 let dragStartScroll = 0;
 let ignoreClick = false;
 let unlockError = "";
+let overlayDepth = 0;
+let menuOverlayActive = false;
 
-function createPrompt(defaultValue = "", labelText = "Nhập tên tab", type = "text") {
+async function enterOverlay(reason = "generic") {
+  overlayDepth += 1;
+  const shouldHide = overlayDepth === 1 && typeof window.multiChat?.hideActiveView === "function";
+  if (shouldHide) {
+    try {
+      await window.multiChat.hideActiveView();
+    } catch (err) {
+      console.warn("[overlay] hideActiveView failed", reason, err);
+    }
+  }
+}
+
+async function exitOverlay(reason = "generic") {
+  overlayDepth = Math.max(overlayDepth - 1, 0);
+  const shouldShow = overlayDepth === 0 && typeof window.multiChat?.showActiveView === "function";
+  if (shouldShow) {
+    try {
+      await window.multiChat.showActiveView();
+    } catch (err) {
+      console.warn("[overlay] showActiveView failed", reason, err);
+    }
+  }
+}
+
+async function createPrompt(defaultValue = "", labelText = "Nhập tên tab", type = "text") {
+  await enterOverlay("prompt");
+  overlayOpen = true;
   return new Promise((resolve) => {
-    overlayOpen = true;
     const backdrop = document.createElement("div");
     backdrop.className = "modal-backdrop";
     const modal = document.createElement("div");
@@ -56,18 +83,20 @@ function createPrompt(defaultValue = "", labelText = "Nhập tên tab", type = "
     document.body.appendChild(backdrop);
     input.focus();
 
+    let cleaned = false;
     const cleanup = () => {
+      if (cleaned) return Promise.resolve();
+      cleaned = true;
       backdrop.remove();
       overlayOpen = false;
+      return exitOverlay("prompt");
     };
     const submit = () => {
       const val = input.value.trim();
-      cleanup();
-      resolve(val);
+      cleanup().then(() => resolve(val));
     };
     const abort = () => {
-      cleanup();
-      resolve(null);
+      cleanup().then(() => resolve(null));
     };
 
     ok.addEventListener("click", submit);
@@ -213,31 +242,30 @@ function renderPlaceholder() {
 async function promptNewTab(serviceId) {
   const svc = getService(serviceId);
   if (!svc) return;
-  await window.multiChat.hideActiveView?.();
   const name = await createPrompt(svc.name);
   if (name === null) {
-    await window.multiChat.showActiveView?.();
     return; // cancelled
   }
   const title = name || svc.name;
   const color = pickColor();
   await window.multiChat.createTab({ serviceId, title, color });
-  await window.multiChat.showActiveView?.();
 }
 
-async function closeMenu(showView = false) {
+async function closeMenu() {
   if (currentMenu) {
     currentMenu.remove();
     currentMenu = null;
   }
-  if (showView && !overlayOpen) {
-    await window.multiChat.showActiveView?.();
+  if (menuOverlayActive) {
+    menuOverlayActive = false;
+    await exitOverlay("context-menu");
   }
 }
 
 async function showTabMenu(tab, e) {
-  await window.multiChat.hideActiveView?.();
-  closeMenu();
+  await closeMenu();
+  await enterOverlay("context-menu");
+  menuOverlayActive = true;
   const menu = document.createElement("div");
   menu.className = "context-menu";
   menu.addEventListener("click", (ev) => ev.stopPropagation());
@@ -252,22 +280,19 @@ async function showTabMenu(tab, e) {
   closeBtn.textContent = "Xóa tab";
 
   renameBtn.addEventListener("click", async () => {
-    closeMenu();
+    await closeMenu();
     const newName = await createPrompt(tab.title);
     if (newName !== null && newName.trim()) {
       await window.multiChat.renameTab?.(tab.id, newName.trim());
     }
-    await window.multiChat.showActiveView?.();
   });
 
   lockBtn.addEventListener("click", async () => {
     await closeMenu();
-    await window.multiChat.hideActiveView?.();
     const latest = getTab(tab.id);
     if (!latest?.hasPasscode) {
       const pass = await createPrompt("", "Nhập mã khóa cho tab", "password");
       if (!pass) {
-        await window.multiChat.showActiveView?.();
         return;
       }
       const res = await window.multiChat.setTabPasscode?.(tab.id, pass);
@@ -280,16 +305,13 @@ async function showTabMenu(tab, e) {
       await window.multiChat.lockTab?.(tab.id);
       unlockError = "";
     }
-    await window.multiChat.showActiveView?.();
     renderPlaceholder();
   });
 
   clearPassBtn.addEventListener("click", async () => {
     await closeMenu();
-    await window.multiChat.hideActiveView?.();
     const pass = await createPrompt("", "Nhập mã hiện tại để gỡ khóa", "password");
     if (!pass) {
-      await window.multiChat.showActiveView?.();
       return;
     }
     const res = await window.multiChat.clearTabPasscode?.(tab.id, pass);
@@ -298,7 +320,6 @@ async function showTabMenu(tab, e) {
     } else {
       unlockError = "";
     }
-    await window.multiChat.showActiveView?.();
     renderPlaceholder();
   });
 
@@ -328,7 +349,7 @@ async function showTabMenu(tab, e) {
 document.addEventListener("click", (ev) => {
   if (overlayOpen) return;
   if (currentMenu && currentMenu.contains(ev.target)) return;
-  closeMenu(true);
+  void closeMenu();
 });
 
 window.addEventListener("keydown", (e) => {
@@ -356,6 +377,9 @@ async function init() {
   icons = window.multiChat.getIcons ? window.multiChat.getIcons() : {};
   tabs = state.tabs || [];
   activeTabId = state.activeTabId || null;
+  if (window.notificationHub && Array.isArray(services)) {
+    window.notificationHub.configure(services).catch((err) => console.warn("[notify] init failed", err));
+  }
   renderSidebar();
   renderTabs();
   window.multiChat.onTabsUpdated?.(handleTabsUpdate);
