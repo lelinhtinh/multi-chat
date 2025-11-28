@@ -81,6 +81,7 @@ let mainWindow = null;
 let stateFilePath = null;
 let currentAttachedView = null;
 let detachedView = null;
+let detachedViewOwner = null;
 const partitionHandlers = new Set();
 const mediaHandlers = new Set();
 let defaultMediaPatched = false;
@@ -309,7 +310,6 @@ function layoutActiveView() {
   if (!mainWindow || !activeTabId) return;
   const meta = tabs.get(activeTabId);
   if (!meta || meta.locked || !meta.view) return;
-  currentAttachedView = meta.view;
   const { width, height } = mainWindow.getContentBounds();
   const w = Math.max(200, width - SIDEBAR_WIDTH);
   const h = Math.max(200, height - TOPBAR_HEIGHT);
@@ -346,6 +346,21 @@ function buildView(serviceId, partitionId) {
     });
   attachNotificationListener(view, partitionId);
   return view;
+}
+
+function removeViewFromWindow(view) {
+  if (!view || !mainWindow) return;
+  try {
+    mainWindow.contentView.removeChildView(view);
+  } catch (_err) {
+    // ignore
+  }
+  try {
+    view.setVisible(false);
+    view.setBounds({ x: -5000, y: -5000, width: 1, height: 1 });
+  } catch (_err) {
+    // ignore
+  }
 }
 
 function detectNotificationFromTitle(title) {
@@ -729,22 +744,17 @@ function detachTabView(tabId) {
   const meta = tabs.get(tabId);
   if (!meta?.view || !mainWindow) return;
   const targetView = meta.view;
-  try {
-    mainWindow.contentView.removeChildView(targetView);
-  } catch (_err) {
-    // ignore
-  }
-  try {
-    targetView.setVisible(false);
-    targetView.setBounds({ x: -5000, y: -5000, width: 1, height: 1 });
-  } catch (_err) {
-    // ignore
-  }
+  removeViewFromWindow(targetView);
   if (currentAttachedView === targetView) {
     currentAttachedView = null;
   }
+  if (detachedView === targetView) {
+    detachedView = null;
+    detachedViewOwner = null;
+  }
   if (activeTabId === tabId) {
     detachedView = null;
+    detachedViewOwner = null;
   }
 }
 
@@ -848,30 +858,77 @@ function createTab({ serviceId, title, color, loadView = true, id: fixedId, pass
   return { id, serviceId, title: title || svc.name, color };
 }
 
-function attachTabView(tabId) {
+function attachTabView(tabId, options = {}) {
   const meta = tabs.get(tabId);
   if (!meta || !mainWindow) return;
-  if (meta.locked) {
+  const { reuseDetached = false } = options;
+
+  if (currentAttachedView && currentAttachedView !== meta.view) {
+    removeViewFromWindow(currentAttachedView);
     currentAttachedView = null;
-    detachedView = null;
+  }
+
+  if (meta.locked) {
+    if (currentAttachedView) {
+      removeViewFromWindow(currentAttachedView);
+      currentAttachedView = null;
+    }
+    if (detachedViewOwner === tabId) {
+      detachedView = null;
+      detachedViewOwner = null;
+    }
     return;
   }
-  if (currentAttachedView) {
-    try {
-      mainWindow.contentView.removeChildView(currentAttachedView);
-    } catch (err) {
-      console.warn("Failed removing previous view", err);
+
+  let targetView = null;
+  if (reuseDetached && detachedView && detachedViewOwner === tabId) {
+    targetView = detachedView;
+  } else {
+    if (!meta.view) {
+      meta.view = buildView(meta.serviceId, tabId);
     }
+    targetView = meta.view;
   }
-  if (!meta.view) {
-    meta.view = buildView(meta.serviceId, tabId);
+
+  if (!targetView) return;
+
+  if (currentAttachedView === targetView) {
+    try {
+      targetView.setVisible(true);
+      targetView.webContents.focus();
+    } catch (_err) {
+      // ignore
+    }
+    if (detachedView === targetView) {
+      detachedView = null;
+      detachedViewOwner = null;
+    }
+    layoutActiveView();
+    return;
   }
-  if (meta.view) {
-    mainWindow.contentView.addChildView(meta.view);
-    meta.view.webContents.focus();
-    currentAttachedView = meta.view;
+
+  if (currentAttachedView && currentAttachedView !== targetView) {
+    removeViewFromWindow(currentAttachedView);
+    currentAttachedView = null;
+  }
+
+  try {
+    mainWindow.contentView.addChildView(targetView);
+  } catch (_err) {
+    // ignore
+  }
+  try {
+    targetView.setVisible(true);
+    targetView.webContents.focus();
+  } catch (_err) {
+    // ignore
+  }
+  currentAttachedView = targetView;
+  if (detachedView === targetView) {
     detachedView = null;
+    detachedViewOwner = null;
   }
+  layoutActiveView();
 }
 
 function broadcastTabs() {
@@ -906,6 +963,13 @@ function removeTab(tabId) {
     } catch (_err) {
       // ignore
     }
+    if (detachedView === meta.view) {
+      detachedView = null;
+      detachedViewOwner = null;
+    }
+    if (currentAttachedView === meta.view) {
+      currentAttachedView = null;
+    }
   }
   tabs.delete(tabId);
   if (activeTabId === tabId) {
@@ -938,7 +1002,6 @@ function activateTab(tabId) {
     meta.hasNotification = false;
   }
   attachTabView(tabId);
-  layoutActiveView();
   persistState();
   broadcastTabs();
   updateAppBadge();
@@ -951,49 +1014,20 @@ function hideActiveView() {
   const meta = tabs.get(activeTabId);
   const targetView = currentAttachedView || meta?.view;
   if (!targetView) return;
-  try {
-    mainWindow.contentView.removeChildView(targetView);
-  } catch (_err) {
-    // ignore
-  }
-  try {
-    targetView.setVisible(false);
-    targetView.setBounds({ x: -5000, y: -5000, width: 1, height: 1 });
-  } catch (_err) {
-    // ignore
-  }
-
+  removeViewFromWindow(targetView);
   detachedView = targetView;
+  detachedViewOwner = activeTabId;
   currentAttachedView = null;
 }
 
 function showActiveView() {
   if (!mainWindow || !activeTabId) return;
-  console.log("[view] showActiveView", { activeTabId, hasDetached: !!detachedView });
-  const meta = tabs.get(activeTabId);
-  if (meta?.locked) {
-    detachTabView(activeTabId);
-    return;
-  }
-  if (detachedView) {
-    try {
-      mainWindow.contentView.addChildView(detachedView);
-      currentAttachedView = detachedView;
-      detachedView = null;
-    } catch (_err) {
-      // ignore and fallback
-    }
-  } else {
-    attachTabView(activeTabId);
-  }
-  if (currentAttachedView) {
-    try {
-      currentAttachedView.setVisible(true);
-    } catch (_err) {
-      // ignore
-    }
-  }
-  layoutActiveView();
+  console.log("[view] showActiveView", {
+    activeTabId,
+    hasDetached: !!detachedView,
+    owner: detachedViewOwner
+  });
+  attachTabView(activeTabId, { reuseDetached: true });
 }
 
 function restoreState() {
